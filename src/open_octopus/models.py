@@ -46,6 +46,13 @@ class Tariff:
     off_peak_start: Optional[str] = None  # "23:30"
     off_peak_end: Optional[str] = None  # "05:30"
 
+    valid_to: Optional[datetime] = None  # End of agreement (e.g. fixed term end)
+
+    @property
+    def is_single_rate(self) -> bool:
+        """True for flat-rate tariffs (e.g. fixed) with no off-peak period."""
+        return self.off_peak_rate is None
+
 
 @dataclass
 class Rate:
@@ -54,6 +61,7 @@ class Rate:
     is_off_peak: bool
     period_end: datetime
     next_rate: float
+    is_single_rate: bool = False  # Flat rate: period_end/next_rate are not meaningful
 
 
 @dataclass

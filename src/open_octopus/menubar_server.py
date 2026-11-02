@@ -43,7 +43,9 @@ class MenuBarServer:
             api_key=self.api_key,
             account=self.account,
             mpan=self.mpan,
-            meter_serial=self.meter_serial
+            meter_serial=self.meter_serial,
+            gas_mprn=self.gas_mprn,
+            gas_meter_serial=self.gas_meter_serial
         )
 
     def _output(self, data: dict):
@@ -89,6 +91,21 @@ class MenuBarServer:
             "off_peak_rate": None,
             "charger_provider": None,  # e.g., "HYPERVOLT", "OHME", "TESLA"
             "charge_history": [],  # Recent charge sessions [{start, end, kwh, duration_mins}]
+            "tariff_display_name": None,  # e.g. "Octopus 18M Fixed"
+            "tariff_valid_to": None,  # Agreement end date (ISO)
+            "is_single_rate": False,  # Flat rate: no peak/off-peak split
+            # Gas
+            "has_gas": False,
+            "gas_rate": None,
+            "gas_standing_charge": 0.0,
+            "gas_today_kwh": 0.0,
+            "gas_today_cost": 0.0,
+            "gas_yesterday_kwh": 0.0,
+            "gas_yesterday_cost": 0.0,
+            "gas_half_hourly_usage": [],
+            "gas_monthly_projection": 0.0,
+            "gas_data_date_latest": None,
+            "gas_data_date_previous": None,
         }
 
         try:
@@ -102,6 +119,12 @@ class MenuBarServer:
                 tariff = await self.client.get_tariff()
                 if tariff:
                     result["tariff_name"] = tariff.product_code
+                    result["tariff_display_name"] = tariff.name
+                    result["tariff_valid_to"] = tariff.valid_to.isoformat() if tariff.valid_to else None
+                    result["is_single_rate"] = tariff.is_single_rate
+                    if tariff.is_single_rate:
+                        result["off_peak_start"] = None
+                        result["off_peak_end"] = None
                     result["standing_charge"] = tariff.standing_charge
                     result["peak_rate"] = tariff.peak_rate
                     result["off_peak_rate"] = tariff.off_peak_rate
@@ -115,53 +138,69 @@ class MenuBarServer:
                     result["rate_ends_in_seconds"] = max(0, int(time_left.total_seconds()))
 
                 # Dispatch status
-                dispatch = await self.client.get_dispatch_status()
-                if dispatch:
-                    if dispatch.is_dispatching:
-                        result["dispatch_status"] = "charging"
-                        if dispatch.current_dispatch:
-                            result["dispatch_end"] = dispatch.current_dispatch.end.isoformat()
-                    elif dispatch.next_dispatch:
-                        result["dispatch_status"] = "scheduled"
-                        result["next_dispatch_start"] = dispatch.next_dispatch.start.isoformat()
-                        result["next_dispatch_end"] = dispatch.next_dispatch.end.isoformat()
+                # Optional feature: not every account/tariff supports it
+                try:
+                    dispatch = await self.client.get_dispatch_status()
+                    if dispatch:
+                        if dispatch.is_dispatching:
+                            result["dispatch_status"] = "charging"
+                            if dispatch.current_dispatch:
+                                result["dispatch_end"] = dispatch.current_dispatch.end.isoformat()
+                        elif dispatch.next_dispatch:
+                            result["dispatch_status"] = "scheduled"
+                            result["next_dispatch_start"] = dispatch.next_dispatch.start.isoformat()
+                            result["next_dispatch_end"] = dispatch.next_dispatch.end.isoformat()
+                except Exception:
+                    pass
 
                 # Get charger/EV provider (e.g., HYPERVOLT, OHME, TESLA)
-                devices = await self.client.get_smart_devices()
-                if devices:
-                    result["charger_provider"] = devices[0].provider
+                # Optional feature: not every account/tariff supports it
+                try:
+                    devices = await self.client.get_smart_devices()
+                    if devices:
+                        result["charger_provider"] = devices[0].provider
 
-                # Get completed charge sessions history
-                completed = await self.client.get_completed_dispatches(limit=5)
-                charge_history = []
-                # Use off-peak rate for cost calculation (charging happens at off-peak)
-                off_peak_rate = result.get("off_peak_rate") or 7.0
-                for session in completed:
-                    duration = int((session["end"] - session["start"]).total_seconds() / 60)
-                    kwh = round(session["kwh"], 2)
-                    cost = round(kwh * off_peak_rate / 100, 2)  # Convert pence to pounds
-                    charge_history.append({
-                        "start": session["start"].isoformat(),
-                        "end": session["end"].isoformat(),
-                        "kwh": kwh,
-                        "duration_mins": duration,
-                        "cost": cost
-                    })
-                result["charge_history"] = charge_history
+                    # Get completed charge sessions history
+                    completed = await self.client.get_completed_dispatches(limit=5)
+                    charge_history = []
+                    # Use off-peak rate for cost calculation (charging happens at off-peak)
+                    off_peak_rate = result.get("off_peak_rate") or 7.0
+                    for session in completed:
+                        duration = int((session["end"] - session["start"]).total_seconds() / 60)
+                        kwh = round(session["kwh"], 2)
+                        cost = round(kwh * off_peak_rate / 100, 2)  # Convert pence to pounds
+                        charge_history.append({
+                            "start": session["start"].isoformat(),
+                            "end": session["end"].isoformat(),
+                            "kwh": kwh,
+                            "duration_mins": duration,
+                            "cost": cost
+                        })
+                    result["charge_history"] = charge_history
+                except Exception:
+                    pass
 
                 # Live power
-                live_power = await self.client.get_live_power()
-                if live_power:
-                    result["live_power_watts"] = live_power.demand_watts
+                # Optional feature: not every account/tariff supports it
+                try:
+                    live_power = await self.client.get_live_power()
+                    if live_power:
+                        result["live_power_watts"] = live_power.demand_watts
+                except Exception:
+                    pass
 
                 # Saving sessions
-                sessions = await self.client.get_saving_sessions()
-                if sessions:
-                    session = sessions[0]
-                    result["has_saving_session"] = True
-                    result["saving_session_start"] = session.start.isoformat()
-                    result["saving_session_end"] = session.end.isoformat()
-                    result["saving_session_active"] = session.is_active
+                # Optional feature: not every account/tariff supports it
+                try:
+                    sessions = await self.client.get_saving_sessions()
+                    if sessions:
+                        session = sessions[0]
+                        result["has_saving_session"] = True
+                        result["saving_session_start"] = session.start.isoformat()
+                        result["saving_session_end"] = session.end.isoformat()
+                        result["saving_session_active"] = session.is_active
+                except Exception:
+                    pass
 
                 # Consumption data
                 if self.mpan and self.meter_serial:
@@ -234,7 +273,11 @@ class MenuBarServer:
                     result["half_hourly_usage"] = half_hourly[-48:] if half_hourly else []
 
                     # Calculate off-peak percentage for most recent day
-                    if display_today in hourly_by_day and result["today_kwh"] > 0:
+                    if (
+                        display_today in hourly_by_day
+                        and result["today_kwh"] > 0
+                        and not (tariff and tariff.is_single_rate)
+                    ):
                         # Off-peak hours: 0-5 and 23 (23:30-05:30)
                         off_peak_kwh = sum(
                             hourly_by_day[display_today].get(h, 0) for h in list(range(6)) + [23]
@@ -249,10 +292,64 @@ class MenuBarServer:
                     elif result["today_cost"] > 0:
                         result["monthly_projection"] = round(result["today_cost"] * 30, 2)
 
+                # Gas (optional - only if gas meter configured)
+                if self.gas_mprn and self.gas_meter_serial:
+                    try:
+                        await self._fetch_gas(result)
+                    except Exception:
+                        pass
+
         except Exception as e:
             result["error"] = str(e)
 
         return result
+
+    async def _fetch_gas(self, result: dict[str, Any]) -> None:
+        """Add gas tariff and consumption to result."""
+        gas_tariff = await self.client.get_gas_tariff()
+        unit_rate = gas_tariff.unit_rate if gas_tariff else 0.0
+        standing_charge = gas_tariff.standing_charge if gas_tariff else 0.0
+        if gas_tariff:
+            result["gas_rate"] = unit_rate
+            result["gas_standing_charge"] = standing_charge
+
+        consumption = await self.client.get_gas_consumption(periods=96)
+        if not consumption:
+            return
+
+        daily = defaultdict(float)
+        half_hourly_by_day = defaultdict(lambda: defaultdict(float))
+        for c in consumption:
+            day = c.start.strftime("%Y-%m-%d")
+            slot = c.start.hour * 2 + (1 if c.start.minute >= 30 else 0)
+            daily[day] += c.kwh
+            half_hourly_by_day[day][slot] = c.kwh
+
+        # Smart meter data lags - use the most recent days that have data
+        sorted_days = sorted(daily.keys(), reverse=True)
+        latest_day = sorted_days[0]
+        prev_day = sorted_days[1] if len(sorted_days) > 1 else None
+
+        def day_cost(kwh: float) -> float:
+            return (kwh * unit_rate + standing_charge) / 100
+
+        result["has_gas"] = True
+        result["gas_data_date_latest"] = latest_day
+        result["gas_today_kwh"] = daily[latest_day]
+        result["gas_today_cost"] = day_cost(daily[latest_day])
+        if prev_day:
+            result["gas_data_date_previous"] = prev_day
+            result["gas_yesterday_kwh"] = daily[prev_day]
+            result["gas_yesterday_cost"] = day_cost(daily[prev_day])
+
+        half_hourly = []
+        for day in ([prev_day] if prev_day else []) + [latest_day]:
+            half_hourly.extend(half_hourly_by_day[day].get(s, 0) for s in range(48))
+        result["gas_half_hourly_usage"] = half_hourly[-48:]
+
+        # Monthly projection from the most recent complete day
+        basis = result["gas_yesterday_cost"] or result["gas_today_cost"]
+        result["gas_monthly_projection"] = round(basis * 30, 2)
 
     def _calculate_cost(
         self,
@@ -268,8 +365,9 @@ class MenuBarServer:
         off_peak_kwh = sum(hourly.get(h, 0) for h in range(6)) + hourly.get(23, 0)
         peak_kwh = total_kwh - off_peak_kwh
 
-        off_rate = tariff.off_peak_rate or 7.0
         peak_rate = tariff.peak_rate or 30.0
+        # Single-rate tariffs (e.g. fixed) have no off-peak rate: charge everything at peak
+        off_rate = tariff.off_peak_rate or peak_rate
 
         cost = (off_peak_kwh * off_rate + peak_kwh * peak_rate) / 100
         cost += tariff.standing_charge / 100

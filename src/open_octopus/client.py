@@ -320,17 +320,20 @@ class OctopusClient:
         Returns:
             GasTariff with rates, or None if not found
         """
+        # gasAgreements.tariff is a concrete GasTariffType (not a union like the
+        # electricity tariff), so fields are queried directly and it already
+        # carries the unit rate.
         data = await self._graphql(
             """
             query GetGasTariff($account: String!) {
                 account(accountNumber: $account) {
                     gasAgreements(active: true) {
                         tariff {
-                            ... on StandardTariff {
-                                displayName
-                                productCode
-                                standingCharge
-                            }
+                            displayName
+                            productCode
+                            tariffCode
+                            standingCharge
+                            unitRate
                         }
                     }
                 }
@@ -343,29 +346,30 @@ class OctopusClient:
         if not agreements:
             return None
 
-        tariff_data = agreements[0].get("tariff", {})
+        tariff_data = agreements[0].get("tariff") or {}
         product_code = tariff_data.get("productCode", "")
+        unit_rate = tariff_data.get("unitRate")
 
-        # Fetch unit rate from REST API
-        http = await self._get_http()
-        tariff_code = f"G-1R-{product_code}-{region}"
-
-        try:
-            resp = await http.get(
-                f"{REST_API_URL}/products/{product_code}/gas-tariffs/{tariff_code}/standard-unit-rates/",
-                params={"page_size": 1},
-                auth=(self.api_key, "")
-            )
-            resp.raise_for_status()
-            rates_data = resp.json()
-            unit_rate = rates_data.get("results", [{}])[0].get("value_inc_vat", 0)
-        except httpx.HTTPError:
-            unit_rate = 0
+        # Fall back to the REST API if GraphQL didn't return a unit rate
+        if unit_rate is None:
+            http = await self._get_http()
+            tariff_code = tariff_data.get("tariffCode") or f"G-1R-{product_code}-{region}"
+            try:
+                resp = await http.get(
+                    f"{REST_API_URL}/products/{product_code}/gas-tariffs/{tariff_code}/standard-unit-rates/",
+                    params={"page_size": 1},
+                    auth=(self.api_key, "")
+                )
+                resp.raise_for_status()
+                rates_data = resp.json()
+                unit_rate = rates_data.get("results", [{}])[0].get("value_inc_vat", 0)
+            except httpx.HTTPError:
+                unit_rate = 0
 
         return GasTariff(
             name=tariff_data.get("displayName", "Unknown"),
             product_code=product_code,
-            standing_charge=tariff_data.get("standingCharge", 0),
+            standing_charge=tariff_data.get("standingCharge") or 0,
             unit_rate=unit_rate
         )
 
@@ -388,6 +392,7 @@ class OctopusClient:
             query GetTariff($account: String!) {
                 account(accountNumber: $account) {
                     electricityAgreements(active: true) {
+                        validTo
                         tariff {
                             ... on HalfHourlyTariff {
                                 displayName
@@ -398,6 +403,7 @@ class OctopusClient:
                                 displayName
                                 productCode
                                 standingCharge
+                                unitRate
                             }
                         }
                     }
@@ -413,6 +419,7 @@ class OctopusClient:
 
         tariff_data = agreements[0].get("tariff", {})
         product_code = tariff_data.get("productCode", "")
+        valid_to = agreements[0].get("validTo")
 
         # Fetch unit rates from REST API
         http = await self._get_http()
@@ -443,6 +450,12 @@ class OctopusClient:
                 peak_rate = val
                 rates["peak"] = val
 
+        # Standard (single-rate) tariffs report their unit rate directly
+        if peak_rate is None and off_peak_rate is None and tariff_data.get("unitRate") is not None:
+            peak_rate = tariff_data["unitRate"]
+            rates["peak"] = peak_rate
+
+        has_off_peak = off_peak_rate is not None
         return Tariff(
             name=tariff_data.get("displayName", "Unknown"),
             product_code=product_code,
@@ -450,8 +463,9 @@ class OctopusClient:
             rates=rates,
             off_peak_rate=off_peak_rate,
             peak_rate=peak_rate,
-            off_peak_start="23:30",
-            off_peak_end="05:30"
+            off_peak_start="23:30" if has_off_peak else None,
+            off_peak_end="05:30" if has_off_peak else None,
+            valid_to=datetime.fromisoformat(valid_to) if valid_to else None
         )
 
     def get_current_rate(self, tariff: Tariff) -> Rate:
@@ -466,6 +480,17 @@ class OctopusClient:
         """
         now = datetime.now()
         current_time = now.strftime("%H:%M")
+
+        # Flat-rate tariff (e.g. fixed): same price all day, nothing to count down to
+        if tariff.is_single_rate:
+            rate = tariff.peak_rate or 30.0
+            return Rate(
+                rate=rate,
+                is_off_peak=False,
+                period_end=now,
+                next_rate=rate,
+                is_single_rate=True
+            )
 
         # Intelligent Octopus Go: off-peak 23:30 - 05:30
         is_off_peak = current_time >= "23:30" or current_time < "05:30"

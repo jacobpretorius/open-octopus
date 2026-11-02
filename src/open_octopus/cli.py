@@ -90,7 +90,10 @@ def rate():
             hours = int(time_left.total_seconds()) // 3600
             mins = (int(time_left.total_seconds()) % 3600) // 60
 
-            if current.is_off_peak:
+            if current.is_single_rate:
+                console.print(f"[yellow]⚡ FLAT RATE[/] [bold]{current.rate:.1f}p/kWh[/]")
+                console.print("   Same price all day")
+            elif current.is_off_peak:
                 console.print(f"[green]🌙 OFF-PEAK[/] [bold]{current.rate:.1f}p/kWh[/]")
                 console.print(f"   Ends in {hours}h {mins}m (at 05:30)")
             else:
