@@ -1,0 +1,6 @@
+#include "Shared.xcconfig"
+
+PRODUCT_NAME = OctopusMenuBarUITests
+PRODUCT_BUNDLE_IDENTIFIER = com.openoctopus.OctopusMenuBarUITests
+GENERATE_INFOPLIST_FILE = YES
+TEST_TARGET_NAME = OctopusMenuBar

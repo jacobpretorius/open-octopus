@@ -1,0 +1,30 @@
+// Shared build settings for OctopusMenuBar (recreated locally; not in upstream repo)
+PRODUCT_NAME = OctopusMenuBar
+PRODUCT_DISPLAY_NAME = Octopus
+PRODUCT_BUNDLE_IDENTIFIER = com.openoctopus.OctopusMenuBar
+MARKETING_VERSION = 0.3.0
+CURRENT_PROJECT_VERSION = 1
+
+SDKROOT = macosx
+SUPPORTED_PLATFORMS = macosx
+MACOSX_DEPLOYMENT_TARGET = 14.0
+SWIFT_VERSION = 5.0
+
+GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_KEY_LSUIElement = YES
+INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.utilities
+INFOPLIST_KEY_NSHumanReadableCopyright =
+
+// App launches the octopus-server Python helper, so no sandbox
+ENABLE_APP_SANDBOX = NO
+ENABLE_HARDENED_RUNTIME = NO
+
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
+ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor
+COMBINE_HIDPI_IMAGES = YES
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks
+ENABLE_PREVIEWS = YES
