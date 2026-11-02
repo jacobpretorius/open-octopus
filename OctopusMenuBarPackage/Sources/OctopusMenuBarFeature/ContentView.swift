@@ -53,6 +53,21 @@ public struct OctopusData: Codable, Sendable {
     var halfHourlyUsage: [Double]  // 48 slots for last 24h
     var dataDateLatest: String?   // Actual date of "today" data
     var dataDatePrevious: String? // Actual date of "yesterday" data
+    var tariffDisplayName: String?  // e.g. "Octopus 18M Fixed"
+    var tariffValidTo: String?      // Agreement end (ISO)
+    var isSingleRate: Bool?         // Flat rate: no peak/off-peak split
+    // Gas (optional - absent when no gas meter configured)
+    var hasGas: Bool?
+    var gasRate: Double?
+    var gasStandingCharge: Double?
+    var gasTodayKwh: Double?
+    var gasTodayCost: Double?
+    var gasYesterdayKwh: Double?
+    var gasYesterdayCost: Double?
+    var gasHalfHourlyUsage: [Double]?
+    var gasMonthlyProjection: Double?
+    var gasDataDateLatest: String?
+    var gasDataDatePrevious: String?
 
     enum CodingKeys: String, CodingKey {
         case timestamp, rate, balance, error, response
@@ -87,6 +102,20 @@ public struct OctopusData: Codable, Sendable {
         case halfHourlyUsage = "half_hourly_usage"
         case dataDateLatest = "data_date_latest"
         case dataDatePrevious = "data_date_previous"
+        case tariffDisplayName = "tariff_display_name"
+        case tariffValidTo = "tariff_valid_to"
+        case isSingleRate = "is_single_rate"
+        case hasGas = "has_gas"
+        case gasRate = "gas_rate"
+        case gasStandingCharge = "gas_standing_charge"
+        case gasTodayKwh = "gas_today_kwh"
+        case gasTodayCost = "gas_today_cost"
+        case gasYesterdayKwh = "gas_yesterday_kwh"
+        case gasYesterdayCost = "gas_yesterday_cost"
+        case gasHalfHourlyUsage = "gas_half_hourly_usage"
+        case gasMonthlyProjection = "gas_monthly_projection"
+        case gasDataDateLatest = "gas_data_date_latest"
+        case gasDataDatePrevious = "gas_data_date_previous"
     }
 
     init() {
@@ -178,7 +207,7 @@ public class AppState: ObservableObject {
         case .rate:
             let prefix = isCharging ? "🔌 " : ""
             if let rate = data.rate {
-                return prefix + String(format: "%.0fp", rate)
+                return prefix + String(format: "%.1fp", rate) + gasRateSuffix
             }
             return isCharging ? "🔌" : "⚡"
 
@@ -190,10 +219,16 @@ public class AppState: ObservableObject {
                 return prefix + power
             }
             if let rate = data.rate {
-                return prefix + String(format: "%.0fp", rate)
+                return prefix + String(format: "%.1fp", rate) + gasRateSuffix
             }
             return isCharging ? "🔌" : "⚡"
         }
+    }
+
+    // " · 🔥9.3p" when a gas meter is configured
+    private var gasRateSuffix: String {
+        guard data.hasGas == true, let gasRate = data.gasRate else { return "" }
+        return String(format: " · 🔥%.1fp", gasRate)
     }
 
     public init() {
@@ -351,6 +386,38 @@ struct CardView<Content: View>: View {
     }
 }
 
+// Bordered group for one fuel (electricity or gas)
+struct EnergySection<Trailing: View, Content: View>: View {
+    let icon: String
+    let title: String
+    let tint: Color
+    @ViewBuilder let trailing: () -> Trailing
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(title, systemImage: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(tint)
+                Spacer()
+                trailing()
+            }
+            content()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(tint.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(tint.opacity(0.35), lineWidth: 1)
+        )
+        .padding(.horizontal, 10)
+    }
+}
+
 struct RateProgressBar: View {
     let progress: Double
     let isOffPeak: Bool
@@ -391,11 +458,12 @@ struct SparklineBar: View {
     let maxVal: Double
     let isOffPeak: Bool
     let timeLabel: String
+    var tint: Color? = nil
     @State private var isHovered = false
 
     var body: some View {
         RoundedRectangle(cornerRadius: 1)
-            .fill(isOffPeak ? Color.cyan.opacity(0.6) : Color.secondary.opacity(0.4))
+            .fill(tint ?? (isOffPeak ? Color.cyan.opacity(0.6) : Color.secondary.opacity(0.4)))
             .frame(height: maxVal > 0 ? CGFloat(value / maxVal) * 28 + 2 : 2)
             .onHover { hovering in
                 isHovered = hovering
@@ -453,17 +521,19 @@ public struct MenuBarView: View {
             } else if let error = state.lastError {
                 errorView(error)
             } else {
-                heroSection
+                headerSection
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 8) {
-                        usageCard
+                        electricitySection
+                        if state.data.hasGas == true {
+                            gasSection
+                        }
                         if state.data.dispatchStatus != "none" {
                             chargingCard
                         }
                         if state.data.savingSessionActive || state.data.hasSavingSession {
                             savingSessionCard
                         }
-                        rateCard
                         insightsCard
                         aiCard
                     }
@@ -478,131 +548,144 @@ public struct MenuBarView: View {
         .background(Color(NSColor.windowBackgroundColor))
     }
 
-    // MARK: - Hero Section
+    // MARK: - Header
 
-    private var heroSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top) {
-                // Live power or rate
-                VStack(alignment: .leading, spacing: 2) {
-                    if let watts = state.data.livePowerWatts {
-                        HStack(spacing: 4) {
-                            Image(systemName: "bolt.fill")
-                                .foregroundColor(.orange)
-                            Text(formatPower(watts))
-                                .font(.system(size: 22, weight: .semibold, design: .rounded))
-                        }
-                        if let rate = state.data.rate {
-                            Text("\(formatCostPerHour(watts, rate: rate))")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                        }
-                    } else if let rate = state.data.rate {
-                        HStack(spacing: 4) {
-                            Image(systemName: state.data.isOffPeak ? "moon.fill" : "sun.max.fill")
-                                .foregroundColor(state.data.isOffPeak ? .cyan : .orange)
-                            Text(String(format: "%.1fp", rate))
-                                .font(.system(size: 22, weight: .semibold, design: .rounded))
-                        }
-                        Text(state.data.isOffPeak ? "Off-peak rate" : "Peak rate")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                Spacer()
-
-                // Balance
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(formatBalance(state.data.balance, credit: state.data.balanceIsCredit))
-                        .font(.system(size: 16, weight: .semibold, design: .monospaced))
-                        .foregroundColor(state.data.balanceIsCredit ? .green : .primary)
-                    Text("Balance")
+    private var headerSection: some View {
+        HStack(alignment: .top) {
+            // Tariff
+            VStack(alignment: .leading, spacing: 2) {
+                Text(state.data.tariffDisplayName ?? formatTariffName(state.data.tariffName ?? "Octopus Energy"))
+                    .font(.system(size: 15, weight: .semibold))
+                if let validTo = state.data.tariffValidTo {
+                    Text("Prices fixed until \(formatLongDate(validTo))")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                 }
             }
 
-            // Rate progress bar
-            VStack(alignment: .leading, spacing: 4) {
-                RateProgressBar(
-                    progress: calculateRateProgress(),
-                    isOffPeak: state.data.isOffPeak
-                )
+            Spacer()
 
-                HStack {
-                    Text(String(format: "%.1fp", state.data.rate ?? 0))
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(state.data.isOffPeak ? .cyan : .orange)
-
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 8))
-                        .foregroundColor(.secondary)
-
-                    Text(String(format: "%.1fp", state.data.isOffPeak ? (state.data.peakRate ?? 0) : (state.data.offPeakRate ?? 0)))
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.secondary)
-
-                    Spacer()
-
-                    Text("in \(formatTimeRemaining(state.data.rateEndsInSeconds))")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                }
+            // Balance
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(formatBalance(state.data.balance, credit: state.data.balanceIsCredit))
+                    .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                    .foregroundColor(state.data.balanceIsCredit ? .green : .primary)
+                Text(state.data.balanceIsCredit ? "In credit" : "Balance")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
             }
         }
         .padding(12)
         .background(Color.primary.opacity(0.02))
     }
 
-    // MARK: - Rate Card
+    // MARK: - Electricity Section
 
-    private var rateCard: some View {
-        CardView(icon: "chart.bar.fill", title: "RATES") {
-            VStack(alignment: .leading, spacing: 6) {
-                // Peak rate row
+    private var isSingleRate: Bool {
+        state.data.isSingleRate ?? (state.data.offPeakRate == nil)
+    }
+
+    private var electricitySection: some View {
+        EnergySection(icon: "bolt.fill", title: "ELECTRICITY", tint: .yellow) {
+            Text(String(format: "%.2fp/kWh", state.data.rate ?? 0))
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+        } content: {
+            // Live power (Home Mini only)
+            if let watts = state.data.livePowerWatts {
                 HStack {
-                    Circle()
-                        .fill(!state.data.isOffPeak ? Color.orange : Color.secondary.opacity(0.3))
-                        .frame(width: 6, height: 6)
-                    Text("Peak")
+                    Text("Using now")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text(String(format: "%.1fp", state.data.peakRate ?? state.data.rate ?? 0))
+                    Text(formatPower(watts))
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    Text("05:30–23:30")
+                    if let rate = state.data.rate {
+                        Text(formatCostPerHour(watts, rate: rate))
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            if isSingleRate {
+                Text("Flat rate · same price at any time of day")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            } else {
+                timeOfUseRates
+            }
+
+            Divider()
+
+            usageRows(
+                latestDate: state.data.dataDateLatest,
+                latestKwh: state.data.todayKwh,
+                latestCost: state.data.todayCost,
+                previousDate: state.data.dataDatePrevious,
+                previousKwh: state.data.yesterdayKwh,
+                previousCost: state.data.yesterdayCost
+            )
+
+            let useHalfHourly = state.usageMode == .halfHourly && !state.data.halfHourlyUsage.isEmpty
+            let values = useHalfHourly ? state.data.halfHourlyUsage : state.data.hourlyUsage
+            if !values.isEmpty {
+                usageChart(
+                    values: values,
+                    tint: isSingleRate ? Color.yellow.opacity(0.55) : nil
+                )
+            }
+
+            standingChargeRow(state.data.standingCharge)
+        }
+    }
+
+    // Peak/off-peak details, only for time-of-use tariffs (e.g. Intelligent Octopus Go)
+    private var timeOfUseRates: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
+                RateProgressBar(
+                    progress: calculateRateProgress(),
+                    isOffPeak: state.data.isOffPeak
+                )
+                HStack {
+                    Text(state.data.isOffPeak ? "Off-peak now" : "Peak now")
+                        .font(.system(size: 9))
+                        .foregroundColor(state.data.isOffPeak ? .cyan : .orange)
+                    Spacer()
+                    Text("\(state.data.isOffPeak ? "Peak" : "Off-peak") in \(formatTimeRemaining(state.data.rateEndsInSeconds))")
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
                 }
+            }
 
-                // Off-peak rate row
-                HStack {
-                    Circle()
-                        .fill(state.data.isOffPeak ? Color.cyan : Color.secondary.opacity(0.3))
-                        .frame(width: 6, height: 6)
-                    Text("Off-peak")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Text(String(format: "%.1fp", state.data.offPeakRate ?? 7.0))
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    Text("23:30–05:30")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                }
+            HStack {
+                Circle()
+                    .fill(!state.data.isOffPeak ? Color.orange : Color.secondary.opacity(0.3))
+                    .frame(width: 6, height: 6)
+                Text("Peak")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(String(format: "%.2fp", state.data.peakRate ?? state.data.rate ?? 0))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                Text("\(state.data.offPeakEnd ?? "05:30")–\(state.data.offPeakStart ?? "23:30")")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
 
-                // Standing charge
-                HStack {
-                    Text("Standing charge")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Text(String(format: "%.2fp/day", state.data.standingCharge))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary)
-                }
-                .padding(.top, 4)
+            HStack {
+                Circle()
+                    .fill(state.data.isOffPeak ? Color.cyan : Color.secondary.opacity(0.3))
+                    .frame(width: 6, height: 6)
+                Text("Off-peak")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(String(format: "%.2fp", state.data.offPeakRate ?? 0))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                Text("\(state.data.offPeakStart ?? "23:30")–\(state.data.offPeakEnd ?? "05:30")")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
             }
         }
     }
@@ -728,110 +811,153 @@ public struct MenuBarView: View {
 
     // MARK: - Usage Card
 
-    private var usageCard: some View {
-        CardView(icon: "chart.line.uptrend.xyaxis", title: "USAGE") {
-            VStack(alignment: .leading, spacing: 8) {
-                // Latest day (may not be "today" due to smart meter delay)
+    // MARK: - Gas Section
+
+    private var gasSection: some View {
+        EnergySection(icon: "flame.fill", title: "GAS", tint: .orange) {
+            Text(String(format: "%.2fp/kWh", state.data.gasRate ?? 0))
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+        } content: {
+            Text("Flat rate · same price at any time of day")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+
+            Divider()
+
+            usageRows(
+                latestDate: state.data.gasDataDateLatest,
+                latestKwh: state.data.gasTodayKwh ?? 0,
+                latestCost: state.data.gasTodayCost ?? 0,
+                previousDate: state.data.gasDataDatePrevious,
+                previousKwh: state.data.gasYesterdayKwh ?? 0,
+                previousCost: state.data.gasYesterdayCost ?? 0
+            )
+
+            if let values = state.data.gasHalfHourlyUsage, !values.isEmpty {
+                usageChart(values: values, tint: Color.orange.opacity(0.55))
+            }
+
+            standingChargeRow(state.data.gasStandingCharge ?? 0)
+        }
+    }
+
+    // MARK: - Shared Section Pieces
+
+    // Daily totals: latest day with meter data, then the day before.
+    // The % compares the latest day against the day before.
+    private func usageRows(
+        latestDate: String?,
+        latestKwh: Double,
+        latestCost: Double,
+        previousDate: String?,
+        previousKwh: Double,
+        previousCost: Double
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Daily use")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("meter data arrives 1–2 days late")
+                    .font(.system(size: 8))
+                    .foregroundColor(.secondary.opacity(0.8))
+            }
+
+            HStack {
+                Text(formatDataDateLabel(latestDate, fallback: "Latest"))
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(formatKwh(latestKwh))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                Text(formatCost(latestCost))
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                if previousKwh > 0 && latestKwh > 0 {
+                    let change = ((latestKwh / previousKwh) - 1) * 100
+                    Text(String(format: "%@%.0f%%", change >= 0 ? "+" : "", change))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(change < 0 ? .green : .orange)
+                        .help("Change vs the day before")
+                }
+            }
+
+            if previousDate != nil || previousKwh > 0 {
                 HStack {
-                    Text(formatDataDateLabel(state.data.dataDateLatest, fallback: "Latest"))
+                    Text(formatDataDateLabel(previousDate, fallback: "Previous"))
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text(formatKwh(state.data.todayKwh))
+                    Text(formatKwh(previousKwh))
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    Text(formatCost(state.data.todayCost))
+                    Text(formatCost(previousCost))
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-
-                    // Change indicator
-                    if state.data.yesterdayKwh > 0 && state.data.todayKwh > 0 {
-                        let change = ((state.data.todayKwh / state.data.yesterdayKwh) - 1) * 100
-                        Text(String(format: "%@%.0f%%", change >= 0 ? "+" : "", change))
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(change < 0 ? .green : .orange)
-                    }
-                }
-
-                // Previous day
-                HStack {
-                    Text(formatDataDateLabel(state.data.dataDatePrevious, fallback: "Previous"))
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Text(formatKwh(state.data.yesterdayKwh))
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    Text(formatCost(state.data.yesterdayCost))
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                }
-
-                // Sparkline with labels
-                if !state.data.hourlyUsage.isEmpty || !state.data.halfHourlyUsage.isEmpty {
-                    VStack(spacing: 2) {
-                        sparkline
-                        HStack {
-                            Text("-24h")
-                            Spacer()
-                            Text("-12h")
-                            Spacer()
-                            Text("Now")
-                        }
-                        .font(.system(size: 8))
-                        .foregroundColor(.secondary)
-                    }
-                    .padding(.top, 4)
                 }
             }
         }
     }
 
-    private var sparkline: some View {
-        // Use half-hourly or hourly based on setting
-        let useHalfHourly = state.usageMode == .halfHourly && !state.data.halfHourlyUsage.isEmpty
-        let values = useHalfHourly ? state.data.halfHourlyUsage : state.data.hourlyUsage
+    // Bars cover the latest day with data, midnight to midnight.
+    // tint == nil colours off-peak slots cyan (time-of-use tariffs).
+    private func usageChart(values: [Double], tint: Color?) -> some View {
         let maxVal = values.max() ?? 1
+        let isHalfHourly = values.count > 24
 
-        return HStack(alignment: .bottom, spacing: useHalfHourly ? 0.5 : 1) {
-            ForEach(Array(values.enumerated()), id: \.offset) { index, value in
-                SparklineBar(
-                    value: value,
-                    maxVal: maxVal,
-                    isOffPeak: isOffPeakForIndex(index, count: values.count, useHalfHourly: useHalfHourly),
-                    timeLabel: timeLabelForIndex(index, count: values.count, useHalfHourly: useHalfHourly)
-                )
+        return VStack(spacing: 2) {
+            HStack(alignment: .bottom, spacing: isHalfHourly ? 0.5 : 1) {
+                ForEach(Array(values.enumerated()), id: \.offset) { index, value in
+                    SparklineBar(
+                        value: value,
+                        maxVal: maxVal,
+                        isOffPeak: isOffPeakForIndex(index, useHalfHourly: isHalfHourly),
+                        timeLabel: timeLabelForIndex(index, useHalfHourly: isHalfHourly),
+                        tint: tint
+                    )
+                }
             }
+            .frame(height: 32)
+
+            HStack {
+                Text("00:00")
+                Spacer()
+                Text("12:00")
+                Spacer()
+                Text("24:00")
+            }
+            .font(.system(size: 8))
+            .foregroundColor(.secondary)
         }
-        .frame(height: 32)
+        .padding(.top, 2)
     }
 
-    private func timeLabelForIndex(_ index: Int, count: Int, useHalfHourly: Bool) -> String {
-        // Calculate the time for this bar
-        // Data spans last 24-48h, index 0 is oldest
-        let slotFromEnd = count - index - 1  // How many slots ago
-
-        if useHalfHourly {
-            let hoursAgo = slotFromEnd / 2
-            let minute = (slotFromEnd % 2) * 30
-            let hour = (24 - hoursAgo) % 24
-            return String(format: "%02d:%02d", hour, 30 - minute)
-        } else {
-            let hour = (24 - slotFromEnd) % 24
-            return String(format: "%02d:00", hour)
+    private func standingChargeRow(_ pencePerDay: Double) -> some View {
+        HStack {
+            Text("Standing charge")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(String(format: "%.2fp/day", pencePerDay))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary)
         }
     }
 
-    private func isOffPeakForIndex(_ index: Int, count: Int, useHalfHourly: Bool) -> Bool {
-        // Calculate actual hour for this slot
-        let slotsPerDay = useHalfHourly ? 48 : 24
-        let slotInDay = index % slotsPerDay
-
+    private func timeLabelForIndex(_ index: Int, useHalfHourly: Bool) -> String {
         if useHalfHourly {
-            // Off-peak: 23:30 (slot 47) to 05:30 (slots 0-11)
-            return slotInDay >= 47 || slotInDay <= 11
-        } else {
-            // Off-peak: hours 0-5 and 23
-            return slotInDay < 6 || slotInDay == 23
+            return String(format: "%02d:%02d", index / 2, (index % 2) * 30)
         }
+        return String(format: "%02d:00", index)
+    }
+
+    private func isOffPeakForIndex(_ index: Int, useHalfHourly: Bool) -> Bool {
+        if useHalfHourly {
+            // Off-peak: 23:30 (slot 47) to 05:30 (slots 0-10)
+            return index >= 47 || index <= 10
+        }
+        // Off-peak: hours 0-5 and 23
+        return index < 6 || index == 23
     }
 
     // MARK: - Insights Card
@@ -854,14 +980,21 @@ public struct MenuBarView: View {
                     }
                 }
 
-                // Monthly projection
-                if state.data.monthlyProjection > 0 {
+                // Monthly projection (electricity + gas)
+                let gasProjection = state.data.gasMonthlyProjection ?? 0
+                if state.data.monthlyProjection > 0 || gasProjection > 0 {
                     HStack(spacing: 4) {
                         Image(systemName: "calendar")
                             .font(.system(size: 10))
                             .foregroundColor(.purple)
-                        Text(String(format: "On track for £%.0f/month", state.data.monthlyProjection))
+                        Text(String(format: "On track for £%.0f/month", state.data.monthlyProjection + gasProjection))
                             .font(.system(size: 11, weight: .medium))
+                    }
+                    if gasProjection > 0 {
+                        Text(String(format: "Electricity £%.0f · Gas £%.0f", state.data.monthlyProjection, gasProjection))
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .padding(.leading, 14)
                     }
                 }
 
@@ -1187,6 +1320,14 @@ public struct MenuBarView: View {
             displayDf.dateFormat = "MMM d"
             return displayDf.string(from: date)
         }
+    }
+
+    private func formatLongDate(_ iso: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: iso) else { return iso }
+        let df = DateFormatter()
+        df.dateFormat = "d MMM yyyy"
+        return df.string(from: date)
     }
 
     private func formatDuration(_ minutes: Int) -> String {

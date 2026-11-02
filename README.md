@@ -94,12 +94,38 @@ ANTHROPIC_API_KEY=sk-ant-xxxxx
 
 ### Menu Bar App (macOS)
 
+The app needs full Xcode (not just Command Line Tools) and gets its data from the `octopus-server` helper, which it looks for in `~/.local/bin`. Credentials are read from `~/.octopus.env`.
+
 ```bash
 git clone https://github.com/abracadabra50/open-octopus.git
 cd open-octopus
-xcodebuild -workspace OctopusMenuBar.xcworkspace -scheme OctopusMenuBar build
-open ~/Library/Developer/Xcode/DerivedData/OctopusMenuBar-*/Build/Products/Debug/OctopusMenuBar.app
+
+# Install the Python helper (puts octopus-server in ~/.local/bin)
+uv tool install ".[agent]"        # or: pipx install ".[agent]"
+
+# First-time Xcode setup, if not already done
+sudo xcodebuild -license accept
+xcodebuild -runFirstLaunch
+
+xcodebuild -workspace OctopusMenuBar.xcworkspace -scheme OctopusMenuBar \
+  -configuration Release -derivedDataPath build build
+cp -R build/Build/Products/Release/OctopusMenuBar.app /Applications/
+open /Applications/OctopusMenuBar.app
 ```
+
+## Recent changes
+
+**Gas support**
+- The menu bar now shows gas: unit rate, standing charge, daily use and cost, a half-hourly chart and a monthly projection.
+- The menu bar title shows both rates, e.g. `⚡ 28.7p · 🔥9.3p`.
+- Electricity and gas have their own bordered sections, under a header with the tariff name and the date a fixed price ends.
+
+**Fixes**
+- **Gas tariff lookup failed** with `400 Bad Request` (wrong GraphQL fragment for `GasTariffType`).
+- **One unsupported feature blanked the whole app.** Accounts without an EV charger, Home Mini or saving sessions got an error screen. Each feature now fails on its own.
+- **Flat-rate tariffs were treated as Intelligent Octopus Go.** Fixed tariffs got a made-up 7p off-peak rate, a countdown to it, and costs that were too low. They now show a single rate, and the CLI prints `FLAT RATE`.
+- **Usage chart labels were wrong.** They now run 00:00–24:00 for the latest day of meter data.
+- **The Xcode build failed** because `Config/*.xcconfig` was missing from the repo; those files are now included.
 
 ## Supported Tariffs
 
